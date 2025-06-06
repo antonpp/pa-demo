@@ -1,0 +1,27 @@
+{
+  "name": "pa-demo",
+  "version": "1.0.0",
+  "description": "Gemini Live Server Demo",
+  "type": "module",
+  "scripts": {
+    "start": "node --trace-warnings --loader ts-node/esm src/live_server.ts",
+    "build": "tsc",
+    "dev": "node --watch --trace-warnings --loader ts-node/esm src/live_server.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^1.4.0",
+    "@types/dotenv": "^8.2.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^20.9.0",
+    "cross-env": "^7.0.3",
+    "ts-node": "^10.9.2",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.2.0"
+  }
+}
