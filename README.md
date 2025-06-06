@@ -9,7 +9,7 @@ A personal assistant that answers your phone.
 
 1. Clone the repository:
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/antonpp/pa-demo.git
 cd pa-demo
 ```
 
