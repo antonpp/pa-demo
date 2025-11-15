@@ -6,6 +6,7 @@ let source;
 let mediaStream;
 let audioCtx;
 let nextStartTime = 0;
+let playingSources = new Set(); // New global variable
 
 const form = document.querySelector("form");
 const instructions = document.getElementById("instructions");
@@ -32,33 +33,75 @@ document.getElementById("bookNextWeek").onclick = () => {
   socket.emit("contentUpdateText", "Book an appointment for next week. Ask for their preferred day and time.");
 };
 
-function base64ToFloat32AudioData(base64String) {
-  const byteCharacters = atob(base64String);
-  const byteArray = [];
+// New utility functions from audio-orb/utils.ts, adapted for app.js
+function encode(bytes) {
+  let binary = '';
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
 
-  for (let i = 0; i < byteCharacters.length; i++) {
-    byteArray.push(byteCharacters.charCodeAt(i));
+function decode(base64) {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function createBlob(data) { // data is Float32Array
+  const l = data.length;
+  const int16 = new Int16Array(l);
+  for (let i = 0; i < l; i++) {
+    // convert float32 -1 to 1 to int16 -32768 to 32767
+    int16[i] = data[i] * 32768;
   }
 
-  const audioChunks = new Uint8Array(byteArray);
+  return {
+    data: encode(new Uint8Array(int16.buffer)),
+    mimeType: 'audio/pcm;rate=16000',
+  };
+}
 
-  // Convert Uint8Array (which contains 16-bit PCM) to Float32Array
-  const length = audioChunks.length / 2; // 16-bit audio, so 2 bytes per sample
-  const float32AudioData = new Float32Array(length);
+async function decodeAudioData(
+  data, // Uint8Array
+  ctx, // AudioContext
+  sampleRate,
+  numChannels,
+) {
+  const buffer = ctx.createBuffer(
+    numChannels,
+    data.length / 2 / numChannels,
+    sampleRate,
+  );
 
-  for (let i = 0; i < length; i++) {
-    // Combine two bytes into one 16-bit signed integer (little-endian)
-    let sample = audioChunks[i * 2] | (audioChunks[i * 2 + 1] << 8);
-    // Convert from 16-bit PCM to Float32 (range -1 to 1)
-    if (sample >= 32768) sample -= 65536;
-    float32AudioData[i] = sample / 32768;
+  const dataInt16 = new Int16Array(data.buffer);
+  const l = dataInt16.length;
+  const dataFloat32 = new Float32Array(l);
+  for (let i = 0; i < l; i++) {
+    dataFloat32[i] = dataInt16[i] / 32768.0;
+  }
+  // Extract interleaved channels
+  if (numChannels === 1) { // Assuming mono audio
+    buffer.copyToChannel(dataFloat32, 0);
+  } else {
+    for (let i = 0; i < numChannels; i++) {
+      const channel = dataFloat32.filter(
+        (_, index) => index % numChannels === i,
+      );
+      buffer.copyToChannel(channel, i);
+    }
   }
 
-  return float32AudioData;
+  return buffer;
 }
 
 socket.on("audioStream", async function (msg) {
-  messageQueue.push(base64ToFloat32AudioData(msg));
+  messageQueue.push(decode(msg)); // msg is base64 string, decode it to Uint8Array
 
   if (!queueProcessing) {
     playAudioData();
@@ -74,11 +117,10 @@ async function playAudioData() {
   }
 
   while (messageQueue.length > 0) {
-    const audioChunks = messageQueue.shift();
+    const audioDataUint8 = messageQueue.shift(); // This is now Uint8Array
 
     // Create an AudioBuffer (Assuming 1 channel and 24k sample rate)
-    const audioBuffer = audioCtx.createBuffer(1, audioChunks.length, 24000);
-    audioBuffer.copyToChannel(audioChunks, 0);
+    const audioBuffer = await decodeAudioData(audioDataUint8, audioCtx, 24000, 1);
 
     // Create an AudioBufferSourceNode
     const source = audioCtx.createBufferSource();
@@ -86,6 +128,10 @@ async function playAudioData() {
 
     // Connect the source to the destination (speakers)
     source.connect(audioCtx.destination);
+
+    source.addEventListener('ended', () => {
+      playingSources.delete(source);
+    });
 
     // Schedule the audio to play
     if (nextStartTime < audioCtx.currentTime) {
@@ -95,6 +141,7 @@ async function playAudioData() {
 
     // Advance the next start time by the duration of the current buffer
     nextStartTime += audioBuffer.duration;
+    playingSources.add(source); // Add to playingSources
   }
   queueProcessing = false;
 }
@@ -107,16 +154,28 @@ document.getElementById("record").onclick = async function (evt) {
   }
 };
 
+// Handle interrupted event from the server
+socket.on("interrupted", function () {
+  console.log("Received interrupted event. Stopping audio playback.");
+  for (const source of playingSources.values()) {
+    source.stop();
+  }
+  playingSources.clear();
+  messageQueue.length = 0; // Clear the message queue
+  nextStartTime = 0; // Reset nextStartTime
+  queueProcessing = false; // Ensure queue processing can restart
+});
+
 async function recordAudio() {
   navigator.mediaDevices.getUserMedia({ audio: true }).then(async (stream) => {
     mediaStream = stream;
-    const audioContext = new AudioContext({ sampleRate: 16000 });
-    source = audioContext.createMediaStreamSource(stream);
+    const inputAudioContext = new AudioContext({ sampleRate: 16000 });
+    const sourceNode = inputAudioContext.createMediaStreamSource(stream);
 
     // Add audio analyzer
-    const analyser = audioContext.createAnalyser();
+    const analyser = inputAudioContext.createAnalyser();
     analyser.fftSize = 256;
-    source.connect(analyser);
+    sourceNode.connect(analyser);
     
     // Start monitoring audio levels
     const micStatus = document.querySelector(".mic-status");
@@ -140,84 +199,29 @@ async function recordAudio() {
     
     updateMicStatus();
 
-    const workletName = "audio-recorder-worklet";
-
-    const AudioRecordingWorklet = `
-      class AudioProcessingWorklet extends AudioWorkletProcessor {
-        // send and clear buffer every 2048 samples,
-        // which at 16khz is about 8 times a second
-        buffer = new Int16Array(2048);
-
-        // current write index
-        bufferWriteIndex = 0;
-
-        constructor() {
-          super();
-          this.hasAudio = false;
-        }
-
-        /**
-         * @param inputs Float32Array[][] [input#][channel#][sample#] so to access first inputs 1st channel inputs[0][0]
-         * @param outputs Float32Array[][]
-         */
-        process(inputs) {
-          if (inputs[0].length) {
-            const channel0 = inputs[0][0];
-            this.processChunk(channel0);
-          }
-          return true;
-        }
-
-        sendAndClearBuffer(){
-          this.port.postMessage({
-            event: "chunk",
-            data: {
-              int16arrayBuffer: this.buffer.slice(0, this.bufferWriteIndex).buffer,
-            },
-          });
-          this.bufferWriteIndex = 0;
-        }
-
-        processChunk(float32Array) {
-          const l = float32Array.length;
-
-          for (let i = 0; i < l; i++) {
-            // convert float32 -1 to 1 to int16 -32768 to 32767
-            const int16Value = float32Array[i] * 32768;
-            this.buffer[this.bufferWriteIndex++] = int16Value;
-            if(this.bufferWriteIndex >= this.buffer.length) {
-              this.sendAndClearBuffer();
-            }
-          }
-
-          if(this.bufferWriteIndex >= this.buffer.length) {
-            this.sendAndClearBuffer();
-          }
-        }
-      }`;
-
-    const script = new Blob(
-      [`registerProcessor("${workletName}", ${AudioRecordingWorklet})`],
-      {
-        type: "application/javascript",
-      },
+    const bufferSize = 256;
+    const scriptProcessorNode = inputAudioContext.createScriptProcessor(
+      bufferSize,
+      1,
+      1,
     );
 
-    const src = URL.createObjectURL(script);
+    scriptProcessorNode.onaudioprocess = (audioProcessingEvent) => {
+      if (!isRecording) return;
 
-    await audioContext.audioWorklet.addModule(src);
-    const recordingWorklet = new AudioWorkletNode(audioContext, workletName);
+      const inputBuffer = audioProcessingEvent.inputBuffer;
+      const pcmData = inputBuffer.getChannelData(0);
 
-    recordingWorklet.port.onmessage = (ev) => {
-      // worklet processes recording floats and messages converted buffer
-      const arrayBuffer = ev.data.data.int16arrayBuffer;
-
-      if (arrayBuffer) {
-        const arrayBufferString = arrayBufferToBase64(arrayBuffer);
-        socket.emit("realtimeInput", arrayBufferString);
-      }
+      socket.emit("realtimeInput", createBlob(pcmData).data);
     };
-    source.connect(recordingWorklet);
+
+    sourceNode.connect(scriptProcessorNode);
+    scriptProcessorNode.connect(inputAudioContext.destination); // Connect to destination to keep it alive
+
+    // Store references for stopping
+    source = sourceNode; // Overwrite global 'source' with MediaStreamAudioSourceNode
+    audioCtx = inputAudioContext; // Overwrite global 'audioCtx' with inputAudioContext
+    window.scriptProcessorNode = scriptProcessorNode; // Store globally to disconnect later
   });
 }
 
@@ -230,6 +234,7 @@ async function recordStart() {
 
 function recordStop() {
   source?.disconnect();
+  window.scriptProcessorNode?.disconnect(); // Disconnect the scriptProcessorNode
   mediaStream?.getTracks().forEach((track) => track.stop());
   isRecording = false;
   document.getElementById("record").textContent = "Start Audio";
@@ -241,12 +246,4 @@ function recordStop() {
 
 // Recording audio logic reference:
 // https://github.com/google-gemini/multimodal-live-api-web-console/blob/main/src/lib/audio-recorder.ts
-function arrayBufferToBase64(buffer) {
-  let binary = "";
-  const bytes = new Uint8Array(buffer);
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return window.btoa(binary);
-} 
+ 

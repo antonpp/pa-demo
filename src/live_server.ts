@@ -38,15 +38,14 @@ async function main() {
       project: GOOGLE_CLOUD_PROJECT,
       location: GOOGLE_CLOUD_LOCATION,
     };
-    model = 'gemini-2.0-flash-live-preview-04-09';
+    model = 'gemini-2.5-flash-native-audio-preview-09-2025';
   } else {
     options = {
       // Google AI
       vertexai: false,
       apiKey: GOOGLE_API_KEY,
     };
-    //model = 'gemini-2.0-flash-live-001';
-    model = 'gemini-2.5-flash-preview-native-audio-dialog';
+    model = 'gemini-2.5-flash-native-audio-preview-09-2025';
   }
   const ai = new GoogleGenAI(options);
   const session = await ai.live.connect({
@@ -54,7 +53,7 @@ async function main() {
     config: { 
       responseModalities: [Modality.AUDIO],
       systemInstruction: getSystemInstructions("Anton"),
-      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } },
+      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Orus" } } },
     },
     callbacks: {
       onopen: () => {
@@ -74,6 +73,11 @@ async function main() {
             'audioStream',
             message.serverContent.modelTurn.parts[0].inlineData.data,
           );
+        }
+
+        const interrupted = message.serverContent?.interrupted;
+        if (interrupted) {
+          io.emit('interrupted');
         }
       },
       onerror: (e: ErrorEvent) => {

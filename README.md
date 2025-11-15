@@ -7,6 +7,8 @@ A personal assistant that answers your phone.
 
 ## Environment Setup
 
+**Prerequisites:** Node.js (version 20 or higher)
+
 1. Clone the repository:
 ```bash
 git clone https://github.com/antonpp/pa-demo.git
@@ -18,7 +20,11 @@ cd pa-demo
 npm install
 ```
 
-3. Copy `.env.example` to `.env` and edit it with your credentials:
+3. Copy `.env.example` to `.env` and edit it with your credentials. The following variables are expected:
+   - `GOOGLE_API_KEY`: Your Google AI Studio API key (if `GOOGLE_GENAI_USE_VERTEXAI` is `false`)
+   - `GOOGLE_CLOUD_PROJECT`: Your Google Cloud Project ID (if `GOOGLE_GENAI_USE_VERTEXAI` is `true`)
+   - `GOOGLE_CLOUD_LOCATION`: Your Google Cloud Project location (e.g., `us-central1`) (if `GOOGLE_GENAI_USE_VERTEXAI` is `true`)
+   - `GOOGLE_GENAI_USE_VERTEXAI`: Set to `true` to use Vertex AI, `false` to use Google AI Studio
 ```bash
 cp .env.example .env
 # Edit .env with your preferred text editor
